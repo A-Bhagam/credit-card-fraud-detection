@@ -1,0 +1,422 @@
+---
+title: "MovieLens"
+author: "Abinav Bhagam"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: '2'
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    highlight: pygments
+    keep_tex: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      fig.align = 'center', 
+                      cache = TRUE)
+```
+
+
+```{r, include=FALSE, echo=FALSE}
+# Load all necessary libraries
+
+if(!require(tidyverse)) install.packages("tidyverse") 
+if(!require(tidyr)) install.packages("tidyr")
+if(!require(stringr)) install.packages("stringr")
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(ggplot2)) install.packages("ggplot2")
+if(!require(gbm)) install.packages("gbm")
+if(!require(caret)) install.packages("caret")
+if(!require(xgboost)) install.packages("xgboost")
+if(!require(e1071)) install.packages("e1071")
+if(!require(class)) install.packages("class")
+if(!require(ROCR)) install.packages("ROCR")
+if(!require(randomForest)) install.packages("randomForest")
+if(!require(PRROC)) install.packages("PRROC")
+if(!require(reshape2)) install.packages("reshape2")
+if(!require(lightgbm)) install.packages("lightgbm")
+```
+
+
+```{r loading_creditcard.csv, echo=FALSE, include=TRUE}
+creditcard <- read.csv("creditcard.csv")
+```
+
+
+# Introduction
+
+This project - Credit Card Fraud Detection - is the the first of the two projects required to pass the _HarvardX -  PH125.9x - Data Science: Capstone_ course, the finale of the _Data Science Professional Certificate_ program
+
+The objective of this project is the development of a fraud identification system using the `creditcard` dataset. The dataset contains a fraction of all credit card transactions made over a two day period on September 2013 by European cardholders.
+
+To further clarify the objective, the `creditcard` dataset is highly unbalanced. As such, many of th observations could possibly be False Positive, or rather, Legal Transactions instead of False Transactions in this scenario. The models created, will be able to detect when a False Positive is indeed, a False Positive
+
+The ideal graph to illustrate our models would be the ROC (Receiver Operating Characteristic) curve, and to be specific, we will be measuring the AUC (area Under Curve). The AUC ranges from 0 to 1, the closer it is to 1, the better our model is preforming. We will be utilizing the aid of various machine learning algorithms to see how efficient we can push our system to become.
+
+**Data Set Source**
+
+https://www.kaggle.com/mlg-ulb/creditcardfraud
+
+
+# Analysis and Refinement of the Dataset
+
+## Analysis
+
+As previously mentioned, the dataset is highly unbalanced. Of the 284,807 transactions recorded only 492 are fraudulent. A scant 0.173%. 
+
+The dataset contains only numerical input variables as a result of a PCA transformation. Due to confidentiality issues we, unfortunately, cannot provide the original features and more background information about the data. Features V1, V2, … V28 are the principal components obtained with PCA, the only variables to not been transformed with PCA are 'Time', 'Amount' and 'Class'.
+
+**Dataset Imbalance**
+
+One of the three variables to not have been altered by PCA is 'Class'. This variable determines whether or not the transaction was fraudulent. The 492 fraudulent transactions all have a 'Class' of 1, the remaining 284,315 have a 0.
+
+```{r converting_numerics_to_words, echo=FALSE, include=TRUE}
+
+creditcard$Class2 <- ifelse(creditcard$Class == 0, "Legal", "Fraud")
+```
+
+
+```{r transaction_histogram, echo=FALSE, include=TRUE}
+# Create a histogram showing the proportion of genuine and fraudulent transactions
+
+creditcard %>%
+  ggplot(aes(Class2)) +
+  geom_bar() +
+  scale_x_discrete() +
+  scale_y_continuous() +
+  labs(title = "Proprotion of Fraudulent vs Genuine Transactions",
+       x = "Type",
+       y = "Frequency")
+```
+
+
+As one can clearly see, the proportion of fraudulent transactions is essentially negligible compared to the genuine transacations. Which is pretty good news! Nice to know our money is safe.
+
+\newpage
+
+So what does the dataset actually look like?
+
+**First 5 rows of the dataset**
+```{r, echo=FALSE, include=TRUE}
+creditcard %>%
+  select(Time, V1, V2, V3, V28, Amount, Class, Class2) %>%
+  head(5)
+```
+
+Most of these variables don't offer immediately relevant information. The only variables that do are the ones unaffected by the PCA transformation. So let's compare fraudulent transactions against those unaafected varibales.
+
+First up, Fraud vs Amount
+
+**Distribution of Fraud**
+
+```{r amount_being_taken_by_each_fraud, echo=FALSE, include=TRUE}
+# Construct a histogram of the amount of money being scammed by each fraudulent transaction
+
+creditcard[creditcard$Class == 1,] %>%
+  ggplot(aes(Amount)) + 
+  geom_histogram(binwidth = 50) +
+  labs(title = "Distribution of Fraud",
+        x = "Dollars",
+        y = "Frequency")
+```
+
+The majority of the fraudulent transactions appear to be of minuscule amounts ~ $1. Makes sense, large scams tends to attract law enforcement. 
+
+```{r table_of_amount_taken, echo=FALSE, include=TRUE}
+# Construct a table of the top 5 amounts of money being scammed
+
+creditcard[creditcard$Class == 1,] %>%
+  group_by(Amount) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  head(n=5)
+```
+
+None of the top 5 amounts being scammed are above a dollar.
+
+\newpage
+
+We've compared frauds vs amount, but what about fraud vs time? Does time play a role in when fraudulent activity occurs?
+
+**Fraud Timeseries**
+
+```{r timeseries_graph, echo=FALSE, include=TRUE}
+#Construct a timeseries graph of all fraudulent transactions
+
+creditcard[creditcard$Class == 1,] %>%
+  ggplot(aes(Time)) + 
+  geom_histogram(binwidth = 50) +
+  labs(title = "Frauds Timeseries",
+        x = "Time",
+        y = "Frequency")
+```
+
+There doesn't seem to be much a correlation here. 
+
+
+## Refinement
+
+Before we move onto model construction, it will be neccesarry to construct training, test and validation datasets. 
+
+```{r makes_datasets, echo=FALSE, include=TRUE}
+# Set seed
+
+set.seed(284807)
+
+# Split datasets
+
+creditcard$Class2 <- NULL
+
+train_index <- createDataPartition(
+  y = creditcard$Class, 
+  p = .6, 
+  list = F
+)
+
+train <- creditcard[train_index,]
+
+test_validation <- creditcard[-train_index,]
+
+test_index <- createDataPartition(
+  y = test_validation$Class, 
+  p = .5, 
+  list = F)
+
+test <- test_validation[test_index,]
+validation <- test_validation[-test_index,]
+
+rm(train_index, test_index, test_validation)
+```
+
+\newpage
+
+# Analysis - Model Construction
+
+
+## Baseline
+
+The most basic form of our model. It predicts what we already know. That all 'Genuine' transactions are indeed, 'Genuine'. As one may expect, we receive an AUC of **0.5**.
+
+```{r baseline_model, echo=FALSE, include=TRUE}
+# Set seed
+
+set.seed(284807)
+
+# Build baseline model that always predicts 'Genuine'
+
+baseline <- creditcard
+baseline$Class <- factor(0, c(0,1))
+
+# Make predictions
+
+pred <- prediction(
+  as.numeric(as.character(baseline$Class)),
+  as.numeric(as.character(creditcard$Class))
+)
+
+# Calculate the AUC
+
+baseline_auc_value <- performance(pred, "auc")
+baseline_auc_plot <- performance(pred, 'sens', 'spec')
+
+# Construct plot
+
+plot(baseline_auc_plot, main=paste("AUC:", baseline_auc_value@y.values[[1]]))
+
+# Insert result into 'results' dataframe
+
+results <- data.frame(
+  Model = "Baseline", 
+  AUC = baseline_auc_value@y.values[[1]]
+)
+```
+
+\newpage
+
+## Bayes
+
+The first evolution of our model will be the incorporation the Bayesian Classifier. Our AUC is boosted by quite a bit, all the way to **0.907**.
+
+```{r bayes_model, echo=FALSE, include=TRUE}
+# Set seed
+
+set.seed(284807)
+
+# Build Bayes model
+
+bayes_model <- naiveBayes(Class ~ ., data = train, laplace = 1)
+
+# Make predictions
+
+predictions <- predict(bayes_model, newdata = test)
+pred <- prediction(as.numeric(predictions), test$Class)
+
+# Calculate the AUC
+
+bayes_auc_value <- performance(pred, "auc")
+bayes_auc_plot <- performance(pred, 'sens', 'spec')
+
+# Construct plot
+
+plot(bayes_auc_plot, main=paste("AUC:", bayes_auc_value@y.values[[1]]))
+
+# Insert result into 'results' dataframe
+
+results <- results %>% add_row(
+  Model = "Bayes Model", 
+  AUC = bayes_auc_value@y.values[[1]],
+)
+```
+
+\newpage
+
+## KNN - K-Nearest Neighbors
+
+Can a KNN model where k = 5 go beyond the  Bayesian Classifier? Evidently not, for the AUC tumbles all the way back down to **0.549**, barely above the baseline model.
+
+```{r knn_model, echo=FALSE, include=TRUE}
+# Set seed
+
+set.seed(284807)
+
+# Build KNN Model
+
+knn_model <- knn(train[,-30], test[,-30], train$Class, k=5, prob = TRUE)
+
+#Make predictions
+
+pred <- prediction(
+  as.numeric(as.character(knn_model)),
+  as.numeric(as.character(test$Class))
+)
+
+# Calculate the AUC
+
+knn_auc_value <- performance(pred, "auc")
+knn_auc_plot <- performance(pred, 'sens', 'spec')
+
+# Construct plot
+
+plot(knn_auc_plot, main=paste("AUC:", knn_auc_value@y.values[[1]]))
+
+# Insert result into 'results' dataframe
+
+results <- results %>% add_row(
+  Model = "KNN Model", 
+  AUC = knn_auc_value@y.values[[1]],
+)
+```
+
+\newpage
+
+## XGBoost
+
+Perhaps it's better to move onwards to much more powerful models. I've attempted to use SVM, Random Forest, GBM and LightGBM to see if the AUC could be improved upon, but the amount of time required to train those models was beyond reasonable.
+
+As such, I've elected to use on the strongest ML algorithms on Kaggle.com, XGBoost. And as expected of such a powerful model, it has blown the AUC through the roof. A new high of **0.939**  has been achieved.
+
+```{r xgboost_model, echo=FALSE, include=TRUE}
+# Set seed
+
+set.seed(284807) 
+
+# Create training dataset
+
+xgb_train <- xgb.DMatrix(
+  as.matrix(train[, colnames(train) != "Class"]), 
+  label = as.numeric(as.character(train$Class))
+)
+
+# Create test dataset
+
+xgb_test <- xgb.DMatrix(
+  as.matrix(test[, colnames(test) != "Class"]), 
+  label = as.numeric(as.character(test$Class))
+)
+
+# Create validation dataset
+
+xgb_validation <- xgb.DMatrix(
+  as.matrix(validation[, colnames(validation) != "Class"]), 
+  label = as.numeric(as.character(validation$Class))
+)
+
+# Prepare parameters
+
+xgb_params <- list(
+  objective = "binary:logistic", 
+  eta = 0.1, 
+  max.depth = 3, 
+  nthread = 6, 
+  eval_metric = "aucpr"
+)
+
+# Train XGBoost
+
+xgb_model <- xgb.train(
+  data = xgb_train, 
+  params = xgb_params, 
+  watchlist = list(test = xgb_test, validation = xgb_validation), 
+  nrounds = 50, 
+  early_stopping_rounds = 4,
+  verbosity = 0,
+  print_every_n = 10,
+  silent = T,
+
+)
+
+# Make predictions
+
+predictions <- predict(
+  xgb_model, 
+  newdata = as.matrix(test[, colnames(test) != "Class"]), 
+  ntreelimit = xgb_model$bestInd
+)
+pred <- prediction(
+  as.numeric(as.character(predictions)),
+  as.numeric(as.character(test$Class))
+)
+
+# Calculate the AUC
+
+xgb_auc_value <- performance(pred, "auc")
+xgb_auc_plot <- performance(pred, 'sens', 'spec')
+
+# Construct plot
+
+plot(xgb_auc_plot, main=paste("AUC:", xgb_auc_value@y.values[[1]]))
+
+# Insert result into 'results' dataframe
+
+results <- results %>% add_row(
+  Model = "XGBoost",
+  AUC = xgb_auc_value@y.values[[1]])
+```
+
+\newapge
+
+
+# Results
+
+These are the results for all the models built, trained, tested and validated.
+
+```{r results, echo=FALSE, include=TRUE}
+# Show results
+
+results
+```
+
+
+# Conclusion
+
+The ensemble method has once again confirmed itself as the undisputed champion of algorithmic modelling.
+
+An XGBoost model can achieve an excellent AUR result of **0.939** in a fraction of the time it took the KNN model to achiev a AUR of **0.549**.
+
+
