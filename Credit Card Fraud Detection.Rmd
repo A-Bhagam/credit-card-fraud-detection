@@ -420,3 +420,12 @@ The ensemble method has once again confirmed itself as the undisputed champion o
 An XGBoost model can achieve an excellent AUR result of **0.939** in a fraction of the time it took the KNN model to achiev a AUR of **0.549**.
 
 
+# Bibliography
+
+https://github.com/AlessandroCorradini/Harvard-Data-Science-Professional/blob/master/09%20-%20PH125.9x%20-%20Capstone/Credit%20Card%20Fraud%20Detection%20Project/Credit%20Card%20Fraud%20Detection%20Project%20-%20Code.Rmd
+
+https://github.com/Rpita623/Detecting-Credit-Card-Fraud/blob/main/Credit_Card_Fraud.R
+
+https://rpubs.com/Sambhav101/756083
+
+https://github.com/shalakasaraogi/credit-card-fraud-detection/blob/main/Credit-card-fraud-detection.R
